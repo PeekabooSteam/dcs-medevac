@@ -433,9 +433,26 @@ function medevac.parseMessage( event )
         --  defaults[ "radio" ] = "yes"
 
         config = iotr.getMessageParameters( message, medevac.delimiter, defaults )
+
+        if config.delay and tonumber( config.delay ) > 0 then
+
+            mist.scheduleFunction(
+                function( location, config )
+                    medevac.spawner.spawnCasualty( location, config )
+                end,
+                {
+                    location,
+                    config
+                },
+                timer.getTime() + tonumber( config.delay )
+            )
+
+        else
+
+            medevac.spawner.spawnCasualty( location, config )
+
+        end
         
-        --  Start spawner
-        medevac.spawner.spawnCasualty( location, config )
 
     elseif ( isHospital ) then
 
@@ -591,7 +608,7 @@ function medevac.spawner.spawnCasualty( location, config )
     medevac.casualties[ medevac.unitIndex ].casualty = unit
     medevac.unitIndex = medevac.unitIndex + 1
 
-    medevac.notify( "Casualty " .. casualtyName .. " spawned" )
+    medevac.notify( "Casualty " .. casualtyName .. " reported" )
 
     return unit
 
