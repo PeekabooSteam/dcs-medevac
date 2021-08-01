@@ -18,15 +18,15 @@ Example usage:
 
 medevac = {}
 
-medevac.casualtyName   = "casualty"
-medevac.debug          = true
-medevac.delimiter      = ","
-medevac.messageIdent   = "mvac"
-medevac.numGroups      = 16
-medevac.spawner        = {}
-medevac.unitIndex      = 1
-medevac.casualties     = {}
-medevac.hospitals      = {}
+medevac.casualtyName            = "casualty"
+medevac.debug                   = true
+medevac.delimiter               = ","
+medevac.listCasualtiesRadioMenu = false
+medevac.messageIdent            = "mvac"
+medevac.spawner                 = {}
+medevac.unitIndex               = 1
+medevac.casualties              = {}
+medevac.hospitals               = {}
 
 
 iotr = {}
@@ -494,44 +494,133 @@ end
 
 
 
+medevac.refreshRadioCasualtiesList = function()
+
+    local function getBRString( callout )
+
+        return mist.getBRString({
+            units   = mist.makeUnitTable({ "[g]" .. callout.casualty.group } ),
+            ref     = mist.utils.makeVec3GL( coalition.getMainRefPoint( coalition.side.BLUE ) ),
+            alt     = false,
+            metric  = false
+        })
+
+    end
+
+    --  Remove old ones
+
+    for i, callout in pairs( medevac.casualties ) do
+        if callout.menuItem then
+            missionCommands.removeItemForCoalition( coalition.side.BLUE, callout.menuItem )
+            callout.menuItem = nil
+        end
+    end
+
+    --  missionCommands.addCommandForCoalition( coalition.side.BLUE, "No casualties.  Refresh list.", medevac.listCasualtiesRadioMenu, medevac.refreshRadioCasualtiesList )
+
+    local callouts = table.filter( medevac.casualties, function( key, callout )
+        return callout.casualty.status ~= "rescued"
+    end )
+
+    if table.length( callouts ) > 0 then
+
+        --  Do on a delay as we have a race condition.  Let's say it's all about slow internet, old in-game tech or something cool
+        mist.scheduleFunction(
+            function( callouts )
+                for i, callout in pairs( callouts ) do
+
+                    if not callout.BRString then
+                        callout.BRString   = getBRString( callout )
+                        callout.menuString = callout.casualty.group .. ": " .. callout.BRString
+                    end
+
+                    local radioString   = "N/A"
+
+                    if callout.casualty.radio and callout.casualty.radio.freq then
+                        radioString = callout.casualty.radio.freq .. "khz"
+                    end
+
+                    local smokeString   = "N/A"
+                    
+                    if callout.casualty.smoke and callout.casualty.smoke.colour then
+                        smokeString = callout.casualty.smoke.colour
+                    end
+
+                    medevac.log( mist.utils.tableShow( callout ) )
+
+                    callout.menuItem = missionCommands.addCommandForCoalition(
+                        coalition.side.BLUE,
+                        callout.menuString,
+                        medevac.listCasualtiesRadioMenu,
+                        function ()
+                            medevac.notify(
+                                "\nID: " .. callout.casualty.group
+                                .. "\nStatus: " .. callout.casualty.status
+                                .. "\nCondition: stable"
+                                .. "\nLocation: " .. callout.BRString
+                                .. "\nRadio signal: " .. radioString
+                                .. "\nSmoke: " .. smokeString
+                            , 15 )
+                        end
+                    )
+                end
+            end,
+            {
+                callouts
+            },
+            timer.getTime() + 3
+        )
+        
+
+    end
+
+
+end
+
+
+
 medevac.setupF10Radio = function()
 
     local unitGroups = table.filter( mist.DBs.MEgroupsByName, function( key, value )
         return value.category == "helicopter" or value.category == "plane"
     end )
 
-    local args, casualtiesMenu, hospitalsMenu, isHelo, medevacMenu
+    local args, casualtiesMenu, hospitalsMenu
 
-    for i, unitGroup in pairs( unitGroups ) do
+    --  Main medevac option
+    local medevacMenu = missionCommands.addSubMenuForCoalition( coalition.side.BLUE, "Medevac", nil )
 
-        isHelo = ( unitGroup.category == "helicopter" )
+    --  Casualties
+    casualtiesMenu                  = missionCommands.addSubMenuForCoalition( coalition.side.BLUE, "Casualties", medevacMenu )
+    medevac.listCasualtiesRadioMenu = missionCommands.addSubMenuForCoalition( coalition.side.BLUE, "List casualties", casualtiesMenu )
 
+    for i, unit in pairs( unitGroups ) do
+
+        --  Shared args for callbacks
         args = {
-            [ "_groupId" ]      = unitGroup.groupId,
-            [ "_groupName" ]    = unitGroup.groupName
+            _groupName = unit.groupName,
+            _groupId = unit.groupId
         }
-
-        medevacMenu     = missionCommands.addSubMenuForGroup( unitGroup.groupId, "Medevac", nil )
-
-        --  Casualties sub-menu
-        casualtiesMenu  = missionCommands.addSubMenuForGroup( unitGroup.groupId, "Casualties", medevacMenu )
-
-        missionCommands.addCommandForGroup( unitGroup.groupId, "List casualties", casualtiesMenu, medevac.listCasualties, args )
         
-        if ( isHelo ) then
-            missionCommands.addCommandForGroup( unitGroup.groupId, "Airlift nearby casualties", casualtiesMenu, medevac.collectCasualties, args )
-            missionCommands.addCommandForGroup( unitGroup.groupId, "Deliver casualty", casualtiesMenu, medevac.deliverCasualties, args )
+        if ( unit.category == "helicopter" ) then
+
+            --  Collect
+            missionCommands.addCommandForGroup( unit.groupId, "Collect casualties", casualtiesMenu, medevac.collectCasualties, args )
+    
+            -- Deliver
+            missionCommands.addCommandForGroup( unit.groupId, "Deliver casualties", casualtiesMenu, medevac.deliverCasualties, args )
+            
         end
 
-        --  Hospitals sub-menu
-        hospitalsMenu   = missionCommands.addSubMenuForGroup( unitGroup.groupId, "Hospitals", medevacMenu )
-        missionCommands.addCommandForGroup( unitGroup.groupId, "List hospitals", hospitalsMenu, medevac.listHospitals, args )
-
-        --  Help
-        missionCommands.addCommandForGroup( unitGroup.groupId, "Medevac help", medevacMenu, medevac.printHelp )
+        -- Hospitals sub-menu
+        hospitalsMenu   = missionCommands.addSubMenuForGroup( unit.groupId, "Hospitals", medevacMenu )
+        missionCommands.addCommandForGroup( unit.groupId, "List hospitals", hospitalsMenu, medevac.listHospitals, args )
 
     end
 
+
+    --  Help
+    missionCommands.addCommandForCoalition( coalition.side.BLUE, "Medevac help", medevacMenu, medevac.printHelp )
     
 end
 
@@ -607,6 +696,8 @@ function medevac.spawner.spawnCasualty( location, config )
     medevac.casualties[ medevac.unitIndex ] = {}
     medevac.casualties[ medevac.unitIndex ].casualty = unit
     medevac.unitIndex = medevac.unitIndex + 1
+
+    medevac.refreshRadioCasualtiesList()
 
     medevac.notify( "Casualty " .. casualtyName .. " reported" )
 
