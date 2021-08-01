@@ -21,7 +21,7 @@ medevac = {}
 medevac.casualtyName   = "casualty"
 medevac.debug          = true
 medevac.delimiter      = ","
-medevac.messageIdent   = "medevac"
+medevac.messageIdent   = "mvac"
 medevac.numGroups      = 16
 medevac.spawner        = {}
 medevac.unitIndex      = 1
@@ -30,71 +30,6 @@ medevac.hospitals      = {}
 
 
 iotr = {}
-
-
-iotr.addCommandForSequentialGroup = function( groupNameStem, numGroups, menuText, paths, func, arguments )
-
-    local returnPaths = {}
-    local unitGroup
-    local unitMenuPath
-    
-    if ( arguments == nil ) then
-        arguments = {} 
-    end
-
-    for i = 1,numGroups,1 do
-
-        groupName  = groupNameStem .. tostring( i )
-        unitGroup  = Group.getByName( groupName )
-
-        if unitGroup then
-            local groupId = unitGroup:getID()
-
-            if ( type( arguments ) == "table" ) then
-                arguments[ "_groupId" ]     = groupId
-                arguments[ "_groupName" ]   = groupName
-            end
-
-            if ( type( paths ) == "table" and paths[ i ] ) then
-                unitMenuPath = paths[ i ]
-            else
-                unitMenuPath = nil
-            end
-
-            returnPaths[ i ] = {
-                [ "path" ]      = missionCommands.addCommandForGroup( groupId, menuText, unitMenuPath, func, arguments ),
-                [ "arguments" ] = arguments
-            }
-
-         end
-    end
-
-    return returnPaths
-
-end
-
-
-iotr.addMenuForSequentialGroup = function( groupNameStem, numGroups, menuText, path )
-
-    local returnPaths = {}
-    local unitGroup
-
-    for i = 1,numGroups,1 do
-
-        local groupName  = groupNameStem .. tostring( i )
-        unitGroup  = Group.getByName( groupName )
-
-        if unitGroup then
-
-            local groupId = unitGroup:getID()
-            returnPaths[ i ] = missionCommands.addSubMenuForGroup( groupId, menuText, path )
-
-         end
-    end
-
-    return returnPaths
-
-end
 
 
 iotr.getMessageParameters = function( message, delimiter, defaults )
@@ -116,8 +51,6 @@ iotr.getMessageParameters = function( message, delimiter, defaults )
         output[ key ] = value
         useOutput = true
     end
-
-    medevac.log( "\n\n\n@getMessageParameters --> " .. message .. mist.utils.tableShow( output ) )
 
     --  Return defaults if there are no params specified
     if ( useOutput ) then
@@ -155,12 +88,14 @@ end
 iotr.isIdentTriggeredByMessage = function( ident, message, delimiter )
 
     if ( delimiter == nil ) then
-        delimiter = "."
+        delimiter = ","
     end
 
-    if ( ( ident == message ) or ( message:find( ident .. delimiter ) == 1 ) ) then
+    if ( ( ident == message ) or ( message:startsWith( ident .. delimiter ) ) ) then
         return true
     end
+
+    return false
 
 end
 
@@ -169,12 +104,20 @@ function string.startsWith( String, Start )
 end
 
 
-function table.filter( tbl, callback )
+function table.filter( tbl, callback, reindex )
     local filteredTable = {}
+    
+    if reindex == nil then
+        reindex = false
+    end
 
     for k, v in pairs( tbl ) do
         if callback( k, v ) then
-            filteredTable[ k ] = v
+            if reindex == true then
+                table.insert( filteredTable, v )
+            else
+                filteredTable[ k ] = v
+            end
         end
     end
 
@@ -182,10 +125,104 @@ function table.filter( tbl, callback )
 end
 
 
+function table.length( tbl )
+    local num = 0
+
+    for k, v in pairs( tbl ) do
+        num = num + 1
+    end
+
+    return num
+end
+
+
 
 ----------------------------------------------------------------------------------
 --  Medevac
 ----------------------------------------------------------------------------------
+
+
+
+--  Menu function to collect the casualties
+medevac.collectCasualties = function( args )
+
+    local helo = Group.getByName( args._groupName ):getUnit( 1 )
+
+    if ( helo:inAir() ) then
+        medevac.notify( "You need to be stationary on the ground", 10 )
+        return
+    end
+
+    --  Get the nearby casualties
+    local nearbyCasualties = medevac.getCasualtiesNearMedevac( medevac.casualties, args._groupName, 50 )
+
+    --  Exit if there are no casualties
+    if ( #nearbyCasualties == 0 ) then
+        medevac.notify( "No casualties in range.", 10 )
+        return
+    end
+
+    --  Loop casualties
+    for i, casualty in pairs( nearbyCasualties ) do
+
+        casualty.casualty.status            = "onboard"
+        casualty.casualty.medevacGroupName  = args._groupName
+        
+        medevac.notify( casualty.casualty.name .. " is now onboard" )
+
+        --  Destroy (remove) the casualty
+        Group.destroy( Group.getByName( casualty.casualty.group ) )
+
+    end
+
+end
+
+
+
+--  Menu function to deliver
+medevac.deliverCasualties = function( args )
+
+    local helo = Group.getByName( args._groupName ):getUnit( 1 )
+
+    if ( helo:inAir() ) then
+        medevac.notify( "You need to be stationary on the ground", 10 )
+        return
+    end
+
+
+    --  Ensure the helo has a casualty
+    local onboardCasualties = table.filter( medevac.casualties, function( key, value ) 
+        return ( value.casualty.medevacGroupName == args._groupName and value.casualty.status == "onboard" )
+    end )
+
+    if ( table.length( onboardCasualties ) == 0 ) then
+        medevac.notify( "You have no casualties on board.", 10 )
+        return
+    end
+
+    --  Get the nearby hospitals
+    local nearbyHospitals = medevac.getHospitalsNearMedevac( medevac.hospitals, args._groupName, 100 )
+
+    --  Exit if there are no hospitals
+    if ( #nearbyHospitals == 0 ) then
+
+        medevac.notify( "No hospitals in range.", 10 )
+        return
+
+    else
+        
+        for i, c in pairs( onboardCasualties ) do
+                
+            medevac.casualties[i].casualty.status   = "rescued"
+            medevac.casualties[i].hospital          = nearbyHospitals[ 1 ].name
+
+            medevac.notify( "You've rescued " .. c.casualty.group .. ".  Well done!", 10 )
+
+        end
+
+    end
+
+end
 
 
 function medevac.eventHandler( event )
@@ -202,8 +239,160 @@ function medevac.eventHandler( event )
         --  Read the message
         local config = medevac.parseMessage( event )
 
+    end
+
+end
+
+
+
+function medevac.getCasualtiesNearMedevac ( casualties, medevacGroupName, range )
+
+    if range == nil then
+        range = 100
+    end
+
+    local casualtiesInRange = {}
+
+    --  Abort if no casualties registered, for pace (TODO: radio option could be disabled?)
+    if #casualties == 0 then
+        return casualtiesInRange
+    end
+
+    --  Get the helo position
+    local heloPos = Group.getByName( medevacGroupName ):getUnit( 1 ):getPosition().p       --  Vec3
+
+    local distance
+
+    casualties = table.filter( casualties, function( key, value )
+        return value.casualty.status == "waiting"
+    end )
+
+    --  Loop casualties
+    for i, casualty in pairs( casualties ) do
+
+        --  Work out the position of the casualty
+        local casualtyPos = Group.getByName( casualty.casualty.group ):getUnit( 1 ):getPosition().p
+
+        --  Calculate the distance between helo and casualty
+        distance = mist.utils.get3DDist( heloPos, casualtyPos )
+
+        --  If in pick-up range then add to the in-range list
+        if ( distance <= range ) then
+            table.insert( casualtiesInRange, casualty )
+        end
 
     end
+
+    return casualtiesInRange
+
+end
+
+
+function medevac.getHospitalsNearMedevac ( hospitals, medevacGroupName, range )
+
+    if range == nil then
+        range = 250
+    end
+
+    local hospitalsInRange = {}
+
+    --  Abort if no hospitals registered, for pace (TODO: radio option could be disabled?)
+    if #hospitals == 0 then
+        return hospitalsInRange
+    end
+
+    --  Get the helo position
+    local heloPos = Group.getByName( medevacGroupName ):getUnit( 1 ):getPosition().p       --  Vec3
+
+    local distance
+
+    --  Loop hospitals
+    for i, hospital in pairs( hospitals ) do
+
+        --  Work out the position of the hospital
+        local hospitalPos = StaticObject.getByName( hospital.name ):getPosition().p
+
+        --  Calculate the distance between helo and hospital
+        distance = mist.utils.get3DDist( heloPos, hospitalPos )
+
+        --  If in pick-up range then add to the in-range list
+        if ( distance <= range ) then
+            table.insert( hospitalsInRange, hospital )
+        end
+
+    end
+
+    return hospitalsInRange
+
+
+end
+
+
+function medevac.listCasualties( args )
+
+    local casualtiesToBeRescued = table.filter( medevac.casualties, function( key, value )
+        return value.casualty.status == "waiting"
+    end )
+
+    local output = ""
+    local groupName
+
+    for i, casualty in pairs( casualtiesToBeRescued ) do
+
+        groupName = casualty.casualty.group
+        output    = output .. "\n#" .. i .. ": " .. groupName
+
+        output = output .. " - " .. mist.getBRString({
+            units   = mist.makeUnitTable({ "[g]" .. groupName } ),
+            ref     = mist.utils.makeVec3GL( coalition.getMainRefPoint( coalition.side.BLUE ) ),
+            alt     = false,
+            metric  = false
+        })
+
+        if ( casualty.radio ) then
+            output = output .. " - " .. casualty.radio.freq .. "AM"
+        end
+
+        if ( casualty.smoke ) then
+            output = output .. " - " .. casualty.smoke.colour .. " smoke"
+        end
+
+    end
+
+    if output == "" then
+        medevac.notify( "No casualties are waiting for rescue." )
+    else
+        medevac.notify( "Casualties:" .. output )
+    end
+
+end
+
+
+function medevac.listHospitals( args )
+
+    local text = ""
+    local distance, hospitalPos
+
+    local heloPos = Group.getByName( args._groupName ):getUnit( 1 ):getPosition().p       --  Vec3
+
+    for i, h in ipairs( medevac.hospitals ) do
+
+        text = text .. "\n" .. h.name
+
+        hospitalPos = StaticObject.getByName( h.name ):getPosition().p
+
+        --  Calculate the distance between helo and hospital
+        distance = mist.utils.get3DDist( heloPos, hospitalPos )
+
+        text = text .. " - " .. ( math.ceil( mist.utils.metersToNM( distance * 10 ) ) / 10 ) .. "nm"
+
+        if ( h.radio ) then
+            text = text .. " - " .. h.radio.freq .. "mhz"       
+        end
+
+    end
+
+    medevac.notify( "Hospitals:" .. text, 10 )
 
 end
 
@@ -226,7 +415,7 @@ function medevac.notify( msg, timeout )
 end
 
 
-function medevac.parseMessage ( event )
+function medevac.parseMessage( event )
 
     --  Force lowercase just... in...  case...
     local message   = event.text:lower();
@@ -241,7 +430,7 @@ function medevac.parseMessage ( event )
     if ( isMedevac ) then
 
         --  Table to store details
-        defaults[ "radio" ] = "yes"
+        --  defaults[ "radio" ] = "yes"
 
         config = iotr.getMessageParameters( message, medevac.delimiter, defaults )
         
@@ -276,14 +465,57 @@ function medevac.printHelp()
         .. "\n     b) smoke=[blue|green|orange|red|white]"
         .. "\n"
         .. "\n-- Examples"--
-        .. "\nmedevac (same as medevac.radio=yes)"
-        .. "\nmedevac" .. medevac.separator .. "freq=3325" .. medevac.separator .. "smoke=orange"
-        .. "\nmedevac" .. medevac.separator .. "freq=375.volume=20" .. medevac.separator .. "smoke=orange"
-        .. "\nmedevac" .. medevac.separator .. "smoke=white"
-        .. "\n\n** Remember to spawn a rescue hospital using \"medevac-hospital\" **"
+        .. "\n" .. medevac.messageIdent .. " (no assistance)"
+        .. "\n" .. medevac.messageIdent .. medevac.delimiter .. "freq=220" .. medevac.delimiter .. "smoke=orange"
+        .. "\n" .. medevac.messageIdent .. medevac.delimiter .. "freq=220.volume=20" .. medevac.delimiter .. "smoke=orange"
+        .. "\n" .. medevac.messageIdent .. medevac.delimiter .. "smoke=white"
+        .. "\n\n** Remember to spawn a rescue hospital using \"" .. medevac.messageIdent .. "-hospital\" **"
 
     medevac.notify( content, 30 )
 
+end
+
+
+
+medevac.setupF10Radio = function()
+
+    local unitGroups = table.filter( mist.DBs.MEgroupsByName, function( key, value )
+        return value.category == "helicopter" or value.category == "plane"
+    end )
+
+    local args, casualtiesMenu, hospitalsMenu, isHelo, medevacMenu
+
+    for i, unitGroup in pairs( unitGroups ) do
+
+        isHelo = ( unitGroup.category == "helicopter" )
+
+        args = {
+            [ "_groupId" ]      = unitGroup.groupId,
+            [ "_groupName" ]    = unitGroup.groupName
+        }
+
+        medevacMenu     = missionCommands.addSubMenuForGroup( unitGroup.groupId, "Medevac", nil )
+
+        --  Casualties sub-menu
+        casualtiesMenu  = missionCommands.addSubMenuForGroup( unitGroup.groupId, "Casualties", medevacMenu )
+
+        missionCommands.addCommandForGroup( unitGroup.groupId, "List casualties", casualtiesMenu, medevac.listCasualties, args )
+        
+        if ( isHelo ) then
+            missionCommands.addCommandForGroup( unitGroup.groupId, "Airlift nearby casualties", casualtiesMenu, medevac.collectCasualties, args )
+            missionCommands.addCommandForGroup( unitGroup.groupId, "Deliver casualty", casualtiesMenu, medevac.deliverCasualties, args )
+        end
+
+        --  Hospitals sub-menu
+        hospitalsMenu   = missionCommands.addSubMenuForGroup( unitGroup.groupId, "Hospitals", medevacMenu )
+        missionCommands.addCommandForGroup( unitGroup.groupId, "List hospitals", hospitalsMenu, medevac.listHospitals, args )
+
+        --  Help
+        missionCommands.addCommandForGroup( unitGroup.groupId, "Medevac help", medevacMenu, medevac.printHelp )
+
+    end
+
+    
 end
 
 
@@ -295,15 +527,12 @@ end
 --  Additional features
 function medevac.spawner.spawnAdditionalFeatures( location, object, config )
 
-    
-    medevac.log( "\n\n\n@spawnAdditionalFeatures --> " .. mist.utils.tableShow( config ) )
-
     --  Radio
 
     if ( config[ "radio" ] == "yes" or config[ "freq" ] ~= nil ) then
 
         if ( config[ "freq" ] == nil ) then
-            config[ "freq" ] = tostring( 30 + ( medevac.unitIndex - 1 ) )
+            config[ "freq" ] = tostring( object.defaultFreq )
         end
         
         object.radio = medevac.spawner.transmitRadioSignal( location, config[ "freq" ], config[ "volume" ] )
@@ -334,24 +563,26 @@ function medevac.spawner.spawnCasualty( location, config )
         category    = "vehicle",
         country     = "USA",
         group       = "casualty" .. tostring( medevac.unitIndex ),
+        hidden      = true,
         name        = "casualty" .. tostring( medevac.unitIndex ),
         units       = {
             [ 1 ] = {
 
                 [ "heading" ]       = 6.2 + 11,
-                [ "playerCanDrive"] = true,
+                [ "playerCanDrive"] = false,
 
                 type            = "Soldier M4",
                 x               = location.x + 0.65,
                 y               = location.z - 0.57
 
             },
-        }
+        },
+        visible      = false
     })
 
     unit.status = "waiting"
 
-    medevac.log( "\n\n\ncasualty@spawnAdditionalFeatures --> " .. mist.utils.tableShow( config ) )
+    unit.defaultFreq = 200 + medevac.unitIndex  -- start at 201
 
     unit = medevac.spawner.spawnAdditionalFeatures( location, unit, config )
 
@@ -385,7 +616,7 @@ function medevac.spawner.spawnHospital( location, config )
         y           = location.z
     })
 
-    medevac.log( "\n\n\nhospital@spawnAdditionalFeatures --> " .. mist.utils.tableShow( config ) )
+    hospital.defaultFreq = 400 + #medevac.hospitals + 1  -- start at 401
 
     hospital = medevac.spawner.spawnAdditionalFeatures( location, hospital, config )
 
@@ -415,7 +646,11 @@ function medevac.spawner.spawnSmoke( location, colour )
         colour = "blue"
     end
 
-    local smoke = trigger.action.smoke( smokeLocation, colourMap[ colour ] )
+    local smoke = {
+        colour = colour
+    }
+    
+    trigger.action.smoke( smokeLocation, colourMap[ colour ] )
 
     medevac.notify( colour .. " smoke spawned" )
 
@@ -429,15 +664,20 @@ end
 
 function medevac.spawner.transmitRadioSignal( location, freq, volume )
 
-    local freq_mhz = tonumber( freq ) * ( 10 ^ ( 8 - freq:len() ) );
+    local freq_mhz = tonumber( freq ) * ( 10 ^ ( 6 - freq:len() ) );
 
     if ( volume == nil ) then
         volume = 100;
     end
 
-    local transmission = trigger.action.radioTransmission( "l10n/DEFAULT/elt1.wav", location, 1, true, freq_mhz, volume )
+    medevac.log( "freq_mhz :: " .. freq_mhz )
 
-    medevac.notify( "Radio transmission broadcast on " .. freq .. "FM" )
+    local transmission = {
+        [ "beacon" ]    = trigger.action.radioTransmission( "l10n/DEFAULT/elt1.wav", location, 0, true, freq_mhz, volume ),
+        [ "freq" ]      = freq
+    }
+
+    medevac.notify( "Radio transmission broadcast on " .. transmission.freq .. "khz" )
 
     return transmission
 
@@ -445,177 +685,8 @@ end
 
 
 ----------------------------------------------------------------------
---  Main handler
+--  Boot code
 ----------------------------------------------------------------------
 
 mist.addEventHandler( medevac.eventHandler )
-
-
-
-medevac.getHospitalsNearMedevac = function( hospitals, medevacGroupName, range )
-
-    if range == nil then
-        range = 250
-    end
-
-    local hospitalsInRange = {}
-    medevac.log( "\n\n\n@all hospitals --> " .. mist.utils.tableShow( hospitals ) )
-
-    --  Abort if no hospitals registered, for pace (TODO: radio option could be disabled?)
-    if #hospitals == 0 then
-        medevac.log( "\n\n\nNo hospitalsInRange" )
-        return hospitalsInRange
-    end
-
-    --  Get the helo position
-    local heloPos = Group.getByName( medevacGroupName ):getUnit( 1 ):getPosition().p       --  Vec3
-
-    local distance
-
-    --  Loop hospitals
-    for i, hospital in pairs( hospitals ) do
-
-        medevac.log( "\n\n\n@hospital --> " .. mist.utils.tableShow( hospital ) )
-
-        --  Work out the position of the hospital
-        local hospitalPos = StaticObject.getByName( hospital.name ):getPosition().p
-
-        --  Calculate the distance between helo and hospital
-        distance = mist.utils.get3DDist( heloPos, hospitalPos )
-
-        --  If in pick-up range then add to the in-range list
-        if ( distance <= range ) then
-            table.insert( hospitalsInRange, hospital )
-        end
-
-    end
-
-    return hospitalsInRange
-
-
-end
-
-
-
-medevac.getCasualtiesNearMedevac = function( casualties, medevacGroupName, range )
-
-    if range == nil then
-        range = 100
-    end
-
-    local casualtiesInRange = {}
-    medevac.log( "\n\n\n@all casualties --> " .. mist.utils.tableShow( casualties ) )
-
-    --  Abort if no casualties registered, for pace (TODO: radio option could be disabled?)
-    if #casualties == 0 then
-        medevac.log( "\n\n\nNo casualtiesInRange" )
-        return casualtiesInRange
-    end
-
-    --  Get the helo position
-    local heloPos = Group.getByName( medevacGroupName ):getUnit( 1 ):getPosition().p       --  Vec3
-
-    local distance
-
-    casualties = table.filter( casualties, function( key, value )
-        return value.casualty.status == "waiting"
-    end )
-
-    --  Loop casualties
-    for i, casualty in pairs( casualties ) do
-
-        medevac.log( "\n\n\n@casualty --> " .. mist.utils.tableShow( casualty ) )
-
-        --  Work out the position of the casualty
-        local casualtyPos = Group.getByName( casualty.casualty.group ):getUnit( 1 ):getPosition().p
-
-        --  Calculate the distance between helo and casualty
-        distance = mist.utils.get3DDist( heloPos, casualtyPos )
-
-        --  If in pick-up range then add to the in-range list
-        if ( distance <= range ) then
-            table.insert( casualtiesInRange, casualty )
-        end
-
-    end
-
-    return casualtiesInRange
-
-end
-
-
---  Menu function to collect the casualties
-medevac.collectCasualties = function( args )
-
-    --  Get the nearby casualties
-    local nearbyCasualties = medevac.getCasualtiesNearMedevac( medevac.casualties, args._groupName )
-
-    --  Exit if there are no casualties
-    if ( #nearbyCasualties == 0 ) then
-        medevac.notify( "No casualties in range.", 10 )
-        return
-    end
-
-    --  Loop casualties
-    for i, casualty in pairs( nearbyCasualties ) do
-
-        medevac.log( "\n\n\n@casualty" .. i .. " casualty --> " .. casualty.casualty.name )
-
-        casualty.casualty.status            = "onboard"
-        casualty.casualty.medevacGroupName  = args._groupName
-
-        --  Destroy (remove) the casualty
-        Group.destroy( Group.getByName( casualty.casualty.group ) )
-
-    end
-
-end
-
-
---  Menu function to deliver
-medevac.deliverCasualties = function( args )
-
-    --  Ensure the helo has a casualty
-    local onboardCasualties = table.filter( medevac.casualties, function( key, value ) 
-        return ( value.casualty.medevacGroupName == args._groupName and value.casualty.status == "onboard" )
-    end )
-
-    if ( #onboardCasualties == 0 ) then
-        medevac.notify( "You have no casualties on board.", 10 )
-        return
-    end
-
-    --  Get the nearby hospitals
-    local nearbyHospitals = medevac.getHospitalsNearMedevac( medevac.hospitals, args._groupName )
-
-    --  Exit if there are no hospitals
-    if ( #nearbyHospitals == 0 ) then
-
-        medevac.notify( "No hospitals in range.", 10 )
-        return
-
-    else
-
-        medevac.log( "\n\n\n@cazzies --> " .. mist.utils.tableShow( medevac.casualties ) )
-        
-        for i, c in pairs( onboardCasualties ) do
-                
-            medevac.casualties[i].casualty.status   = "rescued"
-            medevac.casualties[i].hospital          = nearbyHospitals[ 1 ].name
-
-            medevac.notify( "You've rescued " .. c.casualty.group .. ".  Well done!", 10 )
-
-        end
-
-    end
-
-end
-
-
-
---  Add main "Medevac" menu to F10
-local menuOptions = iotr.addMenuForSequentialGroup( "medevac-", medevac.numGroups, "Medevac" )
-
---  Add options
-iotr.addCommandForSequentialGroup( "medevac-", #menuOptions, "Airlift nearby casualties", menuOptions, medevac.collectCasualties )
-iotr.addCommandForSequentialGroup( "medevac-", #menuOptions, "Deliver casualty", menuOptions, medevac.deliverCasualties )
+medevac.setupF10Radio()
